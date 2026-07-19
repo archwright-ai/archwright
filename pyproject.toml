@@ -1,0 +1,16 @@
+[project]
+name = "archwright-ai"
+version = "0.0.1"
+description = "ArchWright — the architecture auditor for AI agents"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Mahesh Buddolu" }]
+urls = { Repository = "https://github.com/archwright-ai/archwright" }
+
+[project.scripts]
+archwright = "archwright_ai.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
