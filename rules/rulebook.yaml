@@ -1,0 +1,127 @@
+# ArchWright Rulebook v0.1.0
+# Each entry is one audit rule. See docs for schema.
+
+- id: R-04
+  name: unbounded-tool-retry-loop
+  pillar: Reliability
+  severity: warning
+  rationale: >
+    The agent calls the same tool repeatedly with near-identical arguments and
+    receives no new information, expending time and tokens without making
+    progress. Such loops rarely end in success — they end in a timeout, a wrong
+    answer, or a late escalation the agent could have made far earlier — while
+    the user waits blindly, assuming work is happening.
+  source: "Anthropic, 'Building Effective Agents' (2025) — loop-bounding; corroborated in production."
+  detection: |
+    calls = tool_calls in session, in order
+    # GROUP consecutive same-tool calls into runs
+    runs = split calls into maximal runs where run[i].name == run[i-1].name
+    for run in runs:
+      if len(run) < thresholds.max_repeats:          continue   # too short
+      if config.tools[run.name].polling is true:     continue   # designed to repeat
+      if mean_consecutive_arg_similarity(run) < thresholds.arg_similarity: continue  # exploration
+      if all outputs in run are identical:
+        emit Finding(rule=R-04, tool=run.name, count=len(run), evidence=run)
+  evidence_threshold:
+    type: structural
+    min_occurrences: 1
+  thresholds:
+    max_repeats: 3
+    arg_similarity: 0.9
+  severity_rules:
+    - "if session ends in escalation or error: critical"
+    - "else: warning"
+  inputs_required:
+    traces: true
+    config: optional
+  limitations: >
+    Detects only consecutive loops; interleaved patterns (A,B,A,B) are out of
+    scope for v1. Relies on an arg-similarity function whose quality affects
+    precision.
+  remediation: >
+    Add an iteration cap (<=3) with argument-similarity dedup in the agent graph;
+    on cap, branch to query reformulation or escalation. Annotate genuine polling
+    tools as polling:true to suppress false positives.
+
+- id: H-02
+  name: context-bloat
+  pillar: Context Hygiene
+  severity: warning
+  rationale: >
+    The agent resends its whole history every turn, so input tokens climb —
+    wasting money and degrading answer quality as the context window fills.
+  source: "General context-management practice"
+  detection: |
+    tokens = [input_tokens of each LLM call in session, in order]
+    if length(tokens) < thresholds.min_steps: skip     # too short to judge a trend
+    climbing_ratio = fraction of steps where tokens[i] > tokens[i-1]
+    growth = tokens.last / tokens.first
+    if climbing_ratio >= thresholds.climbing_ratio and growth >= thresholds.growth_warning:
+        emit Finding(rule="H-02", session=session.id,
+                    evidence=tokens, growth=growth,
+                    severity = warning if growth < thresholds.growth_critical else critical)
+  evidence_threshold:
+    type: statistical
+    min_sessions: 30
+    min_prevalence: 0.30
+  thresholds:
+    min_steps: 5
+    climbing_ratio: 0.9
+    growth_warning: 3.0
+    growth_critical: 5.0
+  severity_rules:
+    - "if growth >= growth_critical (5.0): critical"
+    - "else: warning"
+  inputs_required:
+    traces: true
+    config: false
+  limitations: >
+    A genuinely long, complex task can look like bloat (false positive), and the
+    rule cannot tell good accumulation (relevant context) from lazy accumulation
+    (dumping everything).
+  remediation: >
+    Summarize tool outputs after use; use a sliding-window or running-summary
+    memory instead of resending full history; trim stale turns.
+
+- id: C-01
+  name: model-tier-mismatch
+  pillar: Cost Efficiency
+  severity: warning
+  rationale: >
+    An expensive frontier model is doing work a small model could handle — e.g.
+    a classify_intent step running on a frontier model but consistently producing
+    ~20-token answers — inflating cost with no quality benefit.
+  source: "Efficient model selection practice - Token Usage"
+  detection: |
+    calls = [(step_name, model, output_tokens) for each LLM call]
+    groups = bucket calls by step_name
+    for step, group in groups:
+      if len(group) < thresholds.min_calls_per_step: continue
+      if not price_catalog[group.model].is_frontier_tier: continue
+      if p95(group.output_tokens) >= thresholds.output_tokens_p95: continue
+      # convicted: expensive model, consistently short outputs
+      saving = len(group) * (price_catalog[model].cost - price_catalog.cheapest.cost)
+      emit Finding(rule="C-01", step=step, model=model,
+                   p95_output=p95(group.output_tokens), calls=len(group),
+                   projected_saving=saving)
+  evidence_threshold:
+    type: statistical
+    min_calls_per_step: 30
+  thresholds:
+    output_tokens_p95: 50
+    min_calls_per_step: 30
+  severity_rules:
+    - "if projected_saving >= 100/mo: critical"
+    - "else: warning"
+  inputs_required:
+    traces: true
+    config: false
+    price_catalog: true
+  limitations: >
+    Flagging a short-output step identifies a cost opportunity, not proof that a
+    smaller model preserves accuracy — some superficially trivial steps rely on
+    the larger model's quality. Cannot see output quality, only length.
+  remediation: >
+    Route this step to a smaller model tier, then re-run the task's evaluation
+    suite before switching in production — a cheaper model can silently reduce
+    accuracy on tasks that appear trivial by output length.
