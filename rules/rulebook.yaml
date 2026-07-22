@@ -125,3 +125,37 @@
     Route this step to a smaller model tier, then re-run the task's evaluation
     suite before switching in production — a cheaper model can silently reduce
     accuracy on tasks that appear trivial by output length.
+
+- id: S-02 
+  name: untrusted-output-in-system-prompt
+  pillar: Safety
+  severity: critical
+  rationale: >
+    Untrusted, externally-authored tool output (email, web, customer text) is concatenated into a later LLM call's system prompt, 
+    letting an attacker's words be read as instructions — a prompt-injection path to any tool the agent holds
+  source: "OWASP LLM Top 10 — LLM01 Prompt Injection"
+  detection: |
+    untrusted_outputs = [output of tool_call for each tool_call
+                         where config.tools[name].untrusted is true]
+    for each llm_call in session, in order:
+      sysprompt = llm_call.system_prompt
+      for each prior_output in untrusted_outputs seen before this call:
+        if sysprompt contains prior_output (overlap >= thresholds.min_match_length):
+          emit Finding(rule="S-02",
+                       source=prior_output.step,   # where untrusted text entered
+                       sink=llm_call.step,          # where it wrongly landed
+                       severity=critical)
+  evidence_threshold:
+    type: structural
+    min_occurrences: 1
+  thresholds:
+    min_match_length: 3
+  inputs_required:
+    traces: true
+    config: optional
+  limitations: >
+    exact-substring matching catches verbatim flows but misses paraphrased/summarized untrusted content.
+  remediation: >
+    Move untrusted output into the user/content role with explicit delimiters, 
+    never the system prompt; add an injection-classifier before the LLM call.
+    
