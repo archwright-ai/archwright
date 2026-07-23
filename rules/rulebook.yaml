@@ -159,3 +159,41 @@
     Move untrusted output into the user/content role with explicit delimiters, 
     never the system prompt; add an injection-classifier before the LLM call.
     
+- id: H-07 
+  name: ambiguous-tool-routing
+  pillar: Reliability
+  severity: warning
+  rationale: >
+    The agent misroutes request to a functionally different, but similarly named tool.
+  source: "Tool naming or configuration Anti-pattern"
+  detection: |
+    # SIGNAL 1 (config, structural): confusable definitions
+    for each pair (A, B) of tools in config:
+      if description_similarity(A, B) >= thresholds.min_description_similarity:
+        confusable_pairs.add((A, B))
+    # SIGNAL 2 (traces, statistical): confusion actually firing
+    for each confusable pair (A, B):
+      count sessions where A and B are both called for the same intent,
+        or A is called then B immediately retried for the same request
+      if that count >= thresholds.min_misroute_sessions:
+        emit Finding(rule="H-07", pair=(A,B), severity=critical)   # confirmed misrouting
+      else:
+        emit Finding(rule="H-07", pair=(A,B), severity=warning)    # latent risk only
+  evidence_threshold:
+    type: hybrid
+    config_signal: structural      # 1 confusable pair is a real design flaw
+    trace_signal: statistical      # need repeated misroutes to confirm it fires
+    min_misroute_sessions: 5   
+  thresholds:
+    min_description_similarity: 0.85   # how alike two descriptions must be to flag
+    min_misroute_sessions: 5           # trace occurrences to escalate to critical
+  inputs_required:
+    traces: optional
+    config: true
+  limitations: >
+    description-similarity is heuristic — two legitimately-related tools (e.g. search_docs / search_web) may look confusable without actually misrouting; needs human review of flagged pairs. 
+    Semantic similarity (embeddings) would beat string distance — a v2 improvement
+  remediation: >
+   make tool names and descriptions maximally distinct; add explicit "use this when… / do NOT use when…" disambiguation to each description; 
+   consolidate genuinely-redundant tools; consider a routing eval set.
+    
