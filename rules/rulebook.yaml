@@ -238,3 +238,43 @@
     can be undone. Annotate high-authority tools in config so detection does not
     depend on name heuristics.
     
+- id: C-03
+  name: uncached-repeated-prefix
+  pillar: Cost Efficiency
+  severity: warning
+  rationale: >
+    A large, identical prompt prefix (system prompt + tool schemas) is resent on
+    nearly every LLM call without prompt caching, so the same thousands of tokens
+    are billed at full input price on every call instead of the discounted cached
+    rate.
+  source: "Provider prompt-caching best practice"
+  detection: |
+    prefixes = [llm_call.prompt_prefix for each llm_call in session]
+    common_prefix = longest prefix shared by >= thresholds.min_share_fraction of calls
+    if length(common_prefix) < thresholds.min_prefix_tokens: skip   # too small to matter
+    calls_sending_it = count of calls whose prompt starts with common_prefix
+    if calls_sending_it >= thresholds.min_calls and cache not enabled on these calls:
+      wasted = calls_sending_it * length(common_prefix) * (input_price - cached_price)
+      emit Finding(rule="C-03", prefix_tokens=length(common_prefix),
+                   calls=calls_sending_it, projected_saving=wasted, severity=warning)
+  evidence_threshold:
+    type: statistical
+    min_calls: 20
+  thresholds:
+    min_prefix_tokens: 500       # prefix must be this large to be worth caching
+    min_calls: 20                # repeated across at least this many calls
+    min_share_fraction: 0.8      # prefix shared by >=80% of calls
+  inputs_required:
+    traces: true
+    config: false
+    price_catalog: true
+  limitations: >
+    Prompt-caching support and pricing vary by provider (some offer none, or
+    require minimum prefix sizes), so projected savings are estimates. Detecting
+    whether a call is already cached depends on the trace exposing cache-hit
+    metadata, which not all frameworks emit.
+  remediation: >
+    Enable provider prompt-caching and mark the stable prefix (system prompt +
+    tool schemas) as the cached segment. Keep cacheable content at the start of
+    the prompt, since caching is prefix-based, and avoid injecting per-call
+    variable content into the prefix that would break the cache.
