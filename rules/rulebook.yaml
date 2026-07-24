@@ -278,3 +278,60 @@
     tool schemas) as the cached segment. Keep cacheable content at the start of
     the prompt, since caching is prefix-based, and avoid injecting per-call
     variable content into the prefix that would break the cache.
+
+- id: O-01
+  name: insufficient-telemetry-coverage
+  pillar: Observability
+  severity: warning
+  rationale: >
+    The agent emits incomplete telemetry — spans missing token counts, unnamed or
+    generic step names, tool calls with no spans, or calls without success/error
+    status. Poor observability means failures and cost go unseen, and it disables
+    several other audit rules that depend on this data (C-01, C-03, H-02).
+  source: "OpenTelemetry GenAI semantic conventions; observability best practice"
+  detection: |
+    llm_spans  = all LLM-call spans in the trace corpus
+    tool_spans = all tool-call spans in the trace corpus
+    # each sub-check emits its OWN finding with its own coverage %
+    # SUB-CHECK 1: missing token counts
+    missing_tokens = fraction of llm_spans lacking input_tokens or output_tokens
+    if missing_tokens > thresholds.max_missing_fraction:
+      emit Finding(rule="O-01", check="missing_token_counts",
+                   coverage=1 - missing_tokens, severity=warning)
+    # SUB-CHECK 2: unnamed / generic step names
+    generic = fraction of spans with blank name or a generic name (e.g. "llm_call", "step")
+    if generic > thresholds.max_generic_fraction:
+      emit Finding(rule="O-01", check="unnamed_steps",
+                   coverage=1 - generic, severity=warning)
+    # SUB-CHECK 3: tool calls with no status/error field
+    no_status = fraction of tool_spans lacking a success/error/status attribute
+    if no_status > thresholds.max_missing_fraction:
+      emit Finding(rule="O-01", check="no_status_capture",
+                   coverage=1 - no_status, severity=warning)
+    # SUB-CHECK 4: untraced tool executions (needs config to know what SHOULD appear)
+    if config available:
+      declared_tools = config.tools
+      seen_tools = distinct tool names in tool_spans
+      untraced = declared_tools not in seen_tools
+      if untraced is non-empty:
+        emit Finding(rule="O-01", check="untraced_tools",
+                     tools=untraced, severity=warning)
+  evidence_threshold:
+    type: statistical
+    min_spans: 30                 # need a reasonable corpus before judging coverage
+  thresholds:
+    max_missing_fraction: 0.20    # flag if >20% of spans lack the field
+    max_generic_fraction: 0.50    # flag if >50% of spans have no meaningful name
+  inputs_required:
+    traces: true
+    config: optional              # sub-check 4 (untraced tools) needs config; others don't
+  limitations: >
+    Coverage thresholds are heuristics — a low-traffic or partially-instrumented
+    agent may be flagged even when instrumentation is intentionally minimal. The
+    untraced-tools sub-check can only run when config is available, and it cannot
+    distinguish a tool that was never called from one that ran but emitted no span.
+  remediation: >
+    Adopt the OpenTelemetry GenAI semantic conventions so LLM and tool spans carry
+    token counts, meaningful step names, and success/error status. Instrument every
+    tool call. Emitting this telemetry both improves operability and unlocks the
+    cost and context rules that depend on it.
